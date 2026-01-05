@@ -6,18 +6,12 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-    inputs:
-      skip_tests:
-        description: '跳过测试'
-        required: false
-        default: 'false'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
       GOPROXY: https://goproxy.cn,direct
-      GOPRIVATE: ''
       
     steps:
     - name: Checkout code
@@ -27,55 +21,42 @@ jobs:
       uses: actions/setup-go@v5
       with:
         go-version: '1.22'
-        
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/go/pkg/mod
-          ~/.cache/go-build
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
 
     - name: Install LoongArch Cross-Compiler
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-loongarch64-linux-gnu
-          
-    - name: Initialize module
-      id: init-module
+        echo "正在下载龙芯官方交叉编译工具链..."
+        # 下载龙芯官方提供的交叉编译工具包 (2023.08.08 稳定版)
+        wget https://github.com/loongson/build-tools/releases/download/2023.08.08/x86_64-cross-tools-loongarch64-native.tar.gz
+        
+        echo "解压工具链..."
+        tar -xzf x86_64-cross-tools-loongarch64-native.tar.gz
+        
+        # 将工具链的 bin 目录添加到系统 PATH，以便 Go 能找到编译器
+        # 解压后目录结构通常为 cross-tools/bin
+        echo "$(pwd)/cross-tools/bin" >> $GITHUB_PATH
+        
+    - name: Initialize & Resolve Dependencies
       run: |
         if [ ! -f "go.mod" ]; then
-          echo "创建 go.mod..."
           go mod init github.com/yangmaoqiu/golang
-          echo "module_created=true" >> $GITHUB_OUTPUT
-        else
-          echo "go.mod 已存在"
-          echo "module_created=false" >> $GITHUB_OUTPUT
         fi
-        
-    - name: Resolve dependencies
-      run: |
-        echo "解析依赖..."
-        if [ "${{ steps.init-module.outputs.module_created }}" = "true" ]; then
-          echo "添加 purego 依赖..."
-          go get github.com/ebitengine/purego@v0.7.0
-        fi
+        # 确保 purego 依赖存在
+        go get github.com/ebitengine/purego@v0.7.0
         go mod tidy
         
     - name: Build
       run: |
-        echo "开始交叉编译 LoongArch64 (开启 CGO 以兼容 purego)..."
+        echo "开始交叉编译 LoongArch64..."
         
-        # 必须开启 CGO 才能解决 purego/internal/fakecgo 的 undefined 错误
+        # 1. 开启 CGO 以解决 purego/fakecgo 的定义问题
         export CGO_ENABLED=1
         
-        # 指定交叉编译器
-        export CC=loongarch64-linux-gnu-gcc
+        # 2. 设置 CC 指向下载的编译器
+        # 注意：下载包中的前缀通常是 loongarch64-unknown-linux-gnu-
+        export CC=loongarch64-unknown-linux-gnu-gcc
         
-        # 编译命令
-        # -extldflags "-static" 建议保留，以减少对龙芯机器上 glibc 版本的依赖
+        # 3. 执行编译
+        # 使用 -extldflags "-static" 确保二进制文件在龙芯机器上不依赖 glibc 版本
         GOOS=linux GOARCH=loong64 go build \
           -ldflags="-w -s -extldflags '-static'" \
           -o main-loong64 \
@@ -87,31 +68,22 @@ jobs:
       run: |
         echo "=== 验证构建结果 ==="
         if [ -f "main-loong64" ]; then
-          echo "文件详细信息:"
           file main-loong64
-          echo ""
-          echo "检查是否为静态链接:"
-          ldd main-loong64 2>/dev/null || echo "确认是静态链接或无法在本机解析"
+          # 检查架构是否正确
+          if file main-loong64 | grep -q "LoongArch"; then
+             echo "架构验证通过: LoongArch64"
+          else
+             echo "架构验证失败！"
+             exit 1
+          fi
         else
           echo "❌ 错误: 未生成 main-loong64"
           exit 1
         fi
         
-    - name: Create release package
-      run: |
-        echo "创建发布包..."
-        cat > VERSION << EOF
-          Version: 1.0.0
-          Build: ${{ github.sha }}
-          Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          Arch: loongarch64
-          OS: linux
-          EOF 
-    - name: Upload artifacts
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: loong64-release
-        path: |
-          main-loong64
-          VERSION
-        retention-days: 30
+        name: loong64-binary
+        path: main-loong64
+        retention-days: 7
