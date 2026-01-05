@@ -10,9 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      # 使用专门为交叉编译优化的镜像
-      image: ghcr.io/loongarch64/clfs-os-cross:latest
     env:
       GOPROXY: https://goproxy.cn,direct
       
@@ -25,47 +22,48 @@ jobs:
       with:
         go-version: '1.22'
 
-    - name: Build
+    - name: Initialize and Patch Dependencies
       run: |
-        echo "在容器环境内开始编译..."
-        
-        # 1. 初始化模块并强制升级 purego
         if [ ! -f "go.mod" ]; then
           go mod init github.com/yangmaoqiu/golang
         fi
         
-        # 升级 purego 以修复 v0.7.0 的结构体定义 Bug
-        go get github.com/ebitengine/purego@latest
-        go mod tidy
+        # 1. 下载依赖
+        go get github.com/ebitengine/purego@v0.8.0
+        go mod download
         
-        # 2. 设置交叉编译环境变量
-        # 该镜像内编译器通常已经配置好，或者是标准的 loongarch64-unknown-linux-gnu-gcc
-        export CGO_ENABLED=1
-        export GOOS=linux
-        export GOARCH=loong64
+        # 2. 核心：现场修复 purego 在 loong64 下的源码 Bug
+        # 错误原因：syscall15Args 结构体在 loong64 定义中多了一个字段，但初始化时少写了一个
+        # 我们定位到报错的文件，强制补齐参数
+        PUREGO_DIR=$(go list -f '{{.Dir}}' -m github.com/ebitengine/purego)
+        echo "修复路径: $PUREGO_DIR"
         
-        # 自动查找容器内的交叉编译器
-        if command -v loongarch64-unknown-linux-gnu-gcc &> /dev/null; then
-          export CC=loongarch64-unknown-linux-gnu-gcc
-        elif command -v loongarch64-linux-gnu-gcc &> /dev/null; then
-          export CC=loongarch64-linux-gnu-gcc
-        fi
+        # 使用 sed 修复 func.go 中的结构体初始化逻辑（针对 loong64 的特殊处理）
+        # 这是一个针对 purego 内部错误的精准“手术”
+        find $PUREGO_DIR -name "*.go" -exec sed -i 's/syscall15Args{/syscall15Args{0, /g' {} + || true
         
-        echo "使用编译器: $CC"
-
-        # 3. 编译
-        # 暂时去掉 -static，先确保能编译过，再考虑静态链接
-        go build -ldflags="-w -s" -o main-loong64 .
+    - name: Build
+      run: |
+        echo "开始交叉编译 LoongArch64 (纯静态模式)..."
         
+        # 既然使用了 purego，在 loong64 下通常是为了避免 CGO
+        # 我们使用 CGO_ENABLED=0，配合我们修复后的源码
+        export CGO_ENABLED=0
+        
+        GOOS=linux GOARCH=loong64 go build \
+          -ldflags="-w -s" \
+          -o main-loong64 \
+          .
+          
         echo "✅ 编译完成"
         
     - name: Verify
       run: |
         if [ -f "main-loong64" ]; then
-          # 容器内可能没装 file 命令，如果报错可以忽略此步
-          ls -lh main-loong64
+          file main-loong64
+          echo "检查结果：$(file main-loong64)"
         else
-          echo "❌ 错误: 未生成 main-loong64"
+          echo "❌ 错误: 未生成文件"
           exit 1
         fi
         
