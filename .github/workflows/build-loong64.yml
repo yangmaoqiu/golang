@@ -22,16 +22,24 @@ jobs:
       with:
         go-version: '1.22'
 
-    - name: Install LoongArch Cross-Compiler
+    - name: Force Install LoongArch Compiler
       run: |
-        sudo apt-get update
-        # 安装 Ubuntu 24.04 官方提供的龙芯交叉编译器
-        sudo apt-get install -y gcc-loongarch64-linux-gnu
+        echo "正在从 Debian 仓库手动获取交叉编译器..."
+        # 下载 gcc-loongarch64 及其核心依赖
+        # 使用 Debian Sid 的交叉编译工具包，这是目前最全的
+        wget http://ftp.de.debian.org/debian/pool/main/g/gcc-13-cross-ports/gcc-13-loongarch64-linux-gnu_13.2.0-10cross1_amd64.deb
+        wget http://ftp.de.debian.org/debian/pool/main/g/gcc-13-cross-ports/cpp-13-loongarch64-linux-gnu_13.2.0-10cross1_amd64.deb
+        wget http://ftp.de.debian.org/debian/pool/main/b/binutils-loongarch64-linux-gnu/binutils-loongarch64-linux-gnu_2.41-6_amd64.deb
+        wget http://ftp.de.debian.org/debian/pool/main/g/glibc-loongarch64-cross/libc6-dev-loongarch64-cross_2.37-12cross1_all.deb
+        wget http://ftp.de.debian.org/debian/pool/main/g/glibc-loongarch64-cross/libc6-loongarch64-cross_2.37-12cross1_all.deb
+        wget http://ftp.de.debian.org/debian/pool/main/l/linux-loongarch64-cross/linux-libc-dev-loongarch64-cross_6.5.6-1cross1_all.deb
+
+        # 强制安装下载的包
+        sudo dpkg -i *.deb || sudo apt-get install -f -y
         
-        # 确保软链接存在 (有些版本带版本号，有些不带)
-        if [ ! -f /usr/bin/loongarch64-linux-gnu-gcc ]; then
-          sudo ln -s /usr/bin/loongarch64-linux-gnu-gcc-13 /usr/bin/loongarch64-linux-gnu-gcc || true
-        fi
+        # 建立软链接
+        sudo ln -sf /usr/bin/loongarch64-linux-gnu-gcc-13 /usr/bin/loongarch64-linux-gnu-gcc
+        loongarch64-linux-gnu-gcc --version
 
     - name: Resolve and Patch purego
       run: |
@@ -39,34 +47,27 @@ jobs:
           go mod init github.com/yangmaoqiu/golang
         fi
         
-        # 1. 锁定版本并下载
+        # 锁定并下载 purego
         go get github.com/ebitengine/purego@v0.8.0
         go mod download
         
-        # 2. 获取源码实际存储路径
+        # 定位并修复 struct literal 14/15 参数不匹配 Bug
         PUREGO_DIR=$(go list -f '{{.Dir}}' -m github.com/ebitengine/purego)
-        echo "正在修复 purego 源码: $PUREGO_DIR"
-        
-        # 3. 修复 struct literal 报错 (针对 LoongArch 参数数量不对的 Bug)
-        # 该修复将 syscall15Args{...} 补齐一个参数
         chmod -R +w $PUREGO_DIR
+        # 精准修复初始化代码
         find $PUREGO_DIR -name "*.go" -exec sed -i 's/syscall15Args{/syscall15Args{0, /g' {} + || true
 
     - name: Build
       run: |
-        echo "开始编译 LoongArch64 (开启 CGO 以适配 purego 内部需求)..."
-        
-        # 必须开启 CGO，否则 purego 的 fakecgo 会报 undefined 错误
+        echo "开始编译 LoongArch64..."
         export CGO_ENABLED=1
         export CC=loongarch64-linux-gnu-gcc
         
-        # 编译命令
-        # 建议先去掉 -static，确保基础编译能过
+        # 执行编译
         GOOS=linux GOARCH=loong64 go build \
           -ldflags="-w -s" \
           -o main-loong64 \
           .
-          
         echo "✅ 编译完成"
         
     - name: Verify
@@ -74,7 +75,7 @@ jobs:
         if [ -f "main-loong64" ]; then
           file main-loong64
         else
-          echo "❌ 错误: 未生成文件"
+          echo "❌ 错误: 构建失败"
           exit 1
         fi
         
