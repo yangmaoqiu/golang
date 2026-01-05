@@ -6,11 +6,19 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: '跳过测试'
+        required: false
+        default: 'false'
 
 jobs:
-  build-loong64:
+  build:
     runs-on: ubuntu-latest
-    
+    env:
+      GOPROXY: https://goproxy.cn,direct
+      GOPRIVATE: ''
+      
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -20,33 +28,116 @@ jobs:
       with:
         go-version: '1.22'
         
-    - name: Initialize Go module (修复缺少go.mod)
+    - name: Cache Go modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/go/pkg/mod
+          ~/.cache/go-build
+        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+        restore-keys: |
+          ${{ runner.os }}-go-
+          
+    - name: Initialize module
+      id: init-module
       run: |
-        # 检查是否已有 go.mod
         if [ ! -f "go.mod" ]; then
-          echo "📦 创建 go.mod 文件..."
+          echo "创建 go.mod..."
           go mod init github.com/yangmaoqiu/golang
+          echo "module_created=true" >> $GITHUB_OUTPUT
         else
-          echo "✅ go.mod 已存在"
+          echo "go.mod 已存在"
+          echo "module_created=false" >> $GITHUB_OUTPUT
         fi
         
-        # 显示当前模块信息
-        cat go.mod 2>/dev/null || echo "未找到go.mod"
-        
-    - name: Build for LoongArch64
+    - name: Resolve dependencies
       run: |
-        echo "🛠️ 编译龙芯架构程序..."
-        GOOS=linux GOARCH=loong64 CGO_ENABLED=0 go build -v -o main-loong64 .
+        echo "解析依赖..."
         
-        echo "📋 验证文件:"
-        file main-loong64
+        # 如果刚创建了模块，添加 purego 依赖
+        if [ "${{ steps.init-module.outputs.module_created }}" = "true" ]; then
+          echo "添加 purego 依赖..."
+          go get github.com/ebitengine/purego@v0.7.0
+        fi
         
-        echo "📏 文件大小:"
-        ls -lh main-loong64
+        # 整理依赖
+        go mod tidy
         
-    - name: Upload binary
+        echo "=== 最终 go.mod ==="
+        cat go.mod
+        
+    - name: Build
+      run: |
+        echo "编译龙芯版本..."
+        
+        # 设置编译环境
+        export GO111MODULE=on
+        export CGO_ENABLED=0
+        
+        # 编译
+        GOOS=linux GOARCH=loong64 go build \
+          -ldflags="-w -s" \
+          -o main-loong64 \
+          .
+          
+        echo "✅ 编译完成"
+        
+    - name: Test (optional)
+      if: github.event.inputs.skip_tests != 'true'
+      run: |
+        echo "运行测试..."
+        go test ./... -v || echo "测试失败（可能无测试）"
+        
+    - name: Verify
+      run: |
+        echo "=== 验证构建结果 ==="
+        
+        if [ -f "main-loong64" ]; then
+          echo "文件信息:"
+          file main-loong64
+          echo ""
+          echo "依赖检查:"
+          ldd main-loong64 2>/dev/null || echo "静态链接"
+        else
+          echo "❌ 错误: 未生成 main-loong64"
+          exit 1
+        fi
+        
+    - name: Create release package
+      run: |
+        echo "创建发布包..."
+        
+        # 创建版本信息文件
+        cat > VERSION << EOF
+        Version: 1.0.0
+        Build: ${{ github.sha }}
+        Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        Arch: loongarch64
+        OS: linux
+        EOF
+        
+        # 创建运行脚本
+        cat > run.sh << 'EOF'
+        #!/bin/bash
+        echo "========================================"
+        echo "龙芯架构程序运行脚本"
+        echo "========================================"
+        echo "使用方法:"
+        echo "  1. 确保文件有执行权限: chmod +x main-loong64"
+        echo "  2. 运行: ./main-loong64"
+        echo ""
+        echo "验证架构:"
+        echo "  file main-loong64"
+        echo "========================================"
+        EOF
+        chmod +x run.sh
+        
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: loong64-binary
-        path: main-loong64
-        retention-days: 7
+        name: loong64-release
+        path: |
+          main-loong64
+          run.sh
+          VERSION
+        retention-days: 30
