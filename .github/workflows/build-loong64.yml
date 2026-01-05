@@ -8,94 +8,45 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-loong64:
     runs-on: ubuntu-latest
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # 获取完整历史记录
-        
+      
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
         go-version: '1.22'
         
-    - name: Setup Go module
+    - name: Initialize Go module (修复缺少go.mod)
       run: |
-        # 获取项目名称
-        REPO_NAME="${GITHUB_REPOSITORY#*/}"
-        
-        # 创建或更新 go.mod
-        if [ -f "go.mod" ]; then
-          echo "✅ go.mod 已存在"
-          cat go.mod
+        # 检查是否已有 go.mod
+        if [ ! -f "go.mod" ]; then
+          echo "📦 创建 go.mod 文件..."
+          go mod init github.com/yangmaoqiu/golang
         else
-          echo "📦 创建 go.mod..."
-          go mod init "github.com/$GITHUB_REPOSITORY"
-          
-          # 添加基本信息
-          cat >> go.mod << EOF
-
-// 项目信息
-// 仓库: https://github.com/$GITHUB_REPOSITORY
-// 构建时间: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-EOF
+          echo "✅ go.mod 已存在"
         fi
+        
+        # 显示当前模块信息
+        cat go.mod 2>/dev/null || echo "未找到go.mod"
         
     - name: Build for LoongArch64
       run: |
-        echo "=== 编译信息 ==="
-        echo "仓库: $GITHUB_REPOSITORY"
-        echo "提交: ${GITHUB_SHA:0:8}"
-        echo "架构: linux/loong64"
-        echo ""
+        echo "🛠️ 编译龙芯架构程序..."
+        GOOS=linux GOARCH=loong64 CGO_ENABLED=0 go build -v -o main-loong64 .
         
-        # 编译
-        GOOS=linux GOARCH=loong64 CGO_ENABLED=0 go build \
-          -ldflags="-X 'main.Version=${GITHUB_SHA:0:8}'" \
-          -v -o main-loong64 .
-        
-        echo ""
-        echo "=== 验证结果 ==="
+        echo "📋 验证文件:"
         file main-loong64
-        echo "大小: $(ls -lh main-loong64 | awk '{print $5}')"
         
-    - name: Create release info
-      run: |
-        cat > release-info.md << EOF
-        # LoongArch64 构建结果
+        echo "📏 文件大小:"
+        ls -lh main-loong64
         
-        ## 文件信息
-        - 文件名: main-loong64
-        - 架构: LoongArch64 (龙芯)
-        - 操作系统: Linux
-        - 链接方式: 静态链接 (纯Go)
-        
-        ## 构建信息
-        - 仓库: $GITHUB_REPOSITORY
-        - 提交ID: ${GITHUB_SHA:0:8}
-        - 构建时间: $(date)
-        - Go版本: $(go version)
-        
-        ## 使用说明
-        1. 下载 main-loong64 文件
-        2. 在龙芯电脑上添加执行权限: \`chmod +x main-loong64\`
-        3. 运行: \`./main-loong64\`
-        
-        ## 验证命令
-        \`\`\`bash
-        file main-loong64
-        # 应该显示: ELF 64-bit LSB executable, LoongArch-64
-        \`\`\`
-        EOF
-        
-    - name: Upload artifacts
+    - name: Upload binary
       uses: actions/upload-artifact@v4
       with:
-        name: loong64-release
-        path: |
-          main-loong64
-          release-info.md
-        retention-days: 30
+        name: loong64-binary
+        path: main-loong64
+        retention-days: 7
