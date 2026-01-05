@@ -24,39 +24,35 @@ jobs:
 
     - name: Install LoongArch Cross-Compiler
       run: |
-        echo "正在下载龙芯官方交叉编译工具链..."
-        # 下载龙芯官方提供的交叉编译工具包 (2023.08.08 稳定版)
-        wget https://github.com/loongson/build-tools/releases/download/2023.08.08/x86_64-cross-tools-loongarch64-native.tar.gz
+        sudo apt-get update
+        # 安装 Ubuntu 24.04 (Noble) 中的 gcc-13 交叉编译器
+        sudo apt-get install -y gcc-13-loongarch64-linux-gnu
         
-        echo "解压工具链..."
-        tar -xzf x86_64-cross-tools-loongarch64-native.tar.gz
+        # 建立软链接，让 CC=loongarch64-linux-gnu-gcc 能够工作
+        sudo ln -s /usr/bin/loongarch64-linux-gnu-gcc-13 /usr/bin/loongarch64-linux-gnu-gcc
         
-        # 将工具链的 bin 目录添加到系统 PATH，以便 Go 能找到编译器
-        # 解压后目录结构通常为 cross-tools/bin
-        echo "$(pwd)/cross-tools/bin" >> $GITHUB_PATH
+        # 验证安装
+        loongarch64-linux-gnu-gcc --version
         
     - name: Initialize & Resolve Dependencies
       run: |
         if [ ! -f "go.mod" ]; then
           go mod init github.com/yangmaoqiu/golang
         fi
-        # 确保 purego 依赖存在
-        go get github.com/ebitengine/purego@v0.7.0
         go mod tidy
         
     - name: Build
       run: |
-        echo "开始交叉编译 LoongArch64..."
+        echo "开始交叉编译 LoongArch64 (开启 CGO)..."
         
-        # 1. 开启 CGO 以解决 purego/fakecgo 的定义问题
+        # 开启 CGO 以适配 purego 内部实现
         export CGO_ENABLED=1
         
-        # 2. 设置 CC 指向下载的编译器
-        # 注意：下载包中的前缀通常是 loongarch64-unknown-linux-gnu-
-        export CC=loongarch64-unknown-linux-gnu-gcc
+        # 指向我们刚建立的软链接
+        export CC=loongarch64-linux-gnu-gcc
         
-        # 3. 执行编译
-        # 使用 -extldflags "-static" 确保二进制文件在龙芯机器上不依赖 glibc 版本
+        # 编译命令
+        # 增加 -extldflags "-static" 以确保更好的兼容性
         GOOS=linux GOARCH=loong64 go build \
           -ldflags="-w -s -extldflags '-static'" \
           -o main-loong64 \
@@ -69,11 +65,11 @@ jobs:
         echo "=== 验证构建结果 ==="
         if [ -f "main-loong64" ]; then
           file main-loong64
-          # 检查架构是否正确
-          if file main-loong64 | grep -q "LoongArch"; then
-             echo "架构验证通过: LoongArch64"
+          # 架构应显示为 LoongArch
+          if file main-loong64 | grep -i "LoongArch"; then
+             echo "架构验证通过"
           else
-             echo "架构验证失败！"
+             echo "错误：生成的二进制文件架构不正确！"
              exit 1
           fi
         else
@@ -86,4 +82,3 @@ jobs:
       with:
         name: loong64-binary
         path: main-loong64
-        retention-days: 7
