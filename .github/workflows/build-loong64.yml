@@ -72,7 +72,7 @@ jobs:
         
         # 设置编译环境
         export GO111MODULE=on
-        export CGO_ENABLED=0
+        export CGO_ENABLED=1
         
         # 编译
         GOOS=linux GOARCH=loong64 go build \
