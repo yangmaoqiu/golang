@@ -22,34 +22,46 @@ jobs:
       with:
         go-version: '1.22'
 
-    - name: Initialize and Patch Dependencies
+    - name: Install LoongArch Cross-Compiler
+      run: |
+        sudo apt-get update
+        # 安装 Ubuntu 24.04 官方提供的龙芯交叉编译器
+        sudo apt-get install -y gcc-loongarch64-linux-gnu
+        
+        # 确保软链接存在 (有些版本带版本号，有些不带)
+        if [ ! -f /usr/bin/loongarch64-linux-gnu-gcc ]; then
+          sudo ln -s /usr/bin/loongarch64-linux-gnu-gcc-13 /usr/bin/loongarch64-linux-gnu-gcc || true
+        fi
+
+    - name: Resolve and Patch purego
       run: |
         if [ ! -f "go.mod" ]; then
           go mod init github.com/yangmaoqiu/golang
         fi
         
-        # 1. 下载依赖
+        # 1. 锁定版本并下载
         go get github.com/ebitengine/purego@v0.8.0
         go mod download
         
-        # 2. 核心：现场修复 purego 在 loong64 下的源码 Bug
-        # 错误原因：syscall15Args 结构体在 loong64 定义中多了一个字段，但初始化时少写了一个
-        # 我们定位到报错的文件，强制补齐参数
+        # 2. 获取源码实际存储路径
         PUREGO_DIR=$(go list -f '{{.Dir}}' -m github.com/ebitengine/purego)
-        echo "修复路径: $PUREGO_DIR"
+        echo "正在修复 purego 源码: $PUREGO_DIR"
         
-        # 使用 sed 修复 func.go 中的结构体初始化逻辑（针对 loong64 的特殊处理）
-        # 这是一个针对 purego 内部错误的精准“手术”
+        # 3. 修复 struct literal 报错 (针对 LoongArch 参数数量不对的 Bug)
+        # 该修复将 syscall15Args{...} 补齐一个参数
+        chmod -R +w $PUREGO_DIR
         find $PUREGO_DIR -name "*.go" -exec sed -i 's/syscall15Args{/syscall15Args{0, /g' {} + || true
-        
+
     - name: Build
       run: |
-        echo "开始交叉编译 LoongArch64 (纯静态模式)..."
+        echo "开始编译 LoongArch64 (开启 CGO 以适配 purego 内部需求)..."
         
-        # 既然使用了 purego，在 loong64 下通常是为了避免 CGO
-        # 我们使用 CGO_ENABLED=0，配合我们修复后的源码
-        export CGO_ENABLED=0
+        # 必须开启 CGO，否则 purego 的 fakecgo 会报 undefined 错误
+        export CGO_ENABLED=1
+        export CC=loongarch64-linux-gnu-gcc
         
+        # 编译命令
+        # 建议先去掉 -static，确保基础编译能过
         GOOS=linux GOARCH=loong64 go build \
           -ldflags="-w -s" \
           -o main-loong64 \
@@ -61,7 +73,6 @@ jobs:
       run: |
         if [ -f "main-loong64" ]; then
           file main-loong64
-          echo "检查结果：$(file main-loong64)"
         else
           echo "❌ 错误: 未生成文件"
           exit 1
