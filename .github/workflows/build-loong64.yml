@@ -101,13 +101,12 @@ jobs:
       run: |
         echo "创建发布包..."
         cat > VERSION << EOF
-Version: 1.0.0
-Build: ${{ github.sha }}
-Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-Arch: loongarch64
-OS: linux
-EOF
-        
+          Version: 1.0.0
+          Build: ${{ github.sha }}
+          Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          Arch: loongarch64
+          OS: linux
+          EOF 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
