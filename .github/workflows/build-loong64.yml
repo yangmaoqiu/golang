@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      # 使用专门为交叉编译优化的镜像
+      image: ghcr.io/loongarch64/clfs-os-cross:latest
     env:
       GOPROXY: https://goproxy.cn,direct
       
@@ -22,47 +25,45 @@ jobs:
       with:
         go-version: '1.22'
 
-    - name: Install LoongArch Cross-Compiler
+    - name: Build
       run: |
-        sudo apt-get update
-        # 安装编译器及必需的交叉编译头文件/库
-        sudo apt-get install -y gcc-13-loongarch64-linux-gnu libc6-dev-loongarch64-cross
+        echo "在容器环境内开始编译..."
         
-        # 建立软链接
-        sudo ln -sf /usr/bin/loongarch64-linux-gnu-gcc-13 /usr/bin/loongarch64-linux-gnu-gcc
-        
-    - name: Resolve Dependencies (Upgrade purego)
-      run: |
+        # 1. 初始化模块并强制升级 purego
         if [ ! -f "go.mod" ]; then
           go mod init github.com/yangmaoqiu/golang
         fi
         
-        echo "正在强制升级 purego 以修复 LoongArch 兼容性 Bug..."
-        # 升级到最新版，v0.7.0 已知在 LoongArch 下有 struct 定义问题
+        # 升级 purego 以修复 v0.7.0 的结构体定义 Bug
         go get github.com/ebitengine/purego@latest
-        
         go mod tidy
         
-    - name: Build
-      run: |
-        echo "开始交叉编译 LoongArch64..."
-        
+        # 2. 设置交叉编译环境变量
+        # 该镜像内编译器通常已经配置好，或者是标准的 loongarch64-unknown-linux-gnu-gcc
         export CGO_ENABLED=1
-        export CC=loongarch64-linux-gnu-gcc
+        export GOOS=linux
+        export GOARCH=loong64
         
-        # 尝试编译
-        # 注意：如果依然报错，请尝试去掉 -extldflags "-static" 观察是否是静态链接冲突
-        GOOS=linux GOARCH=loong64 go build \
-          -ldflags="-w -s" \
-          -o main-loong64 \
-          .
-          
+        # 自动查找容器内的交叉编译器
+        if command -v loongarch64-unknown-linux-gnu-gcc &> /dev/null; then
+          export CC=loongarch64-unknown-linux-gnu-gcc
+        elif command -v loongarch64-linux-gnu-gcc &> /dev/null; then
+          export CC=loongarch64-linux-gnu-gcc
+        fi
+        
+        echo "使用编译器: $CC"
+
+        # 3. 编译
+        # 暂时去掉 -static，先确保能编译过，再考虑静态链接
+        go build -ldflags="-w -s" -o main-loong64 .
+        
         echo "✅ 编译完成"
         
     - name: Verify
       run: |
         if [ -f "main-loong64" ]; then
-          file main-loong64
+          # 容器内可能没装 file 命令，如果报错可以忽略此步
+          ls -lh main-loong64
         else
           echo "❌ 错误: 未生成 main-loong64"
           exit 1
