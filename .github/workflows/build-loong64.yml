@@ -1,0 +1,59 @@
+name: Build for LoongArch64
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  build-loong64:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.22'
+        
+    - name: Build for LoongArch64 (Pure Go)
+      run: |
+        echo "🛠️ 编译龙芯架构程序..."
+        GOOS=linux GOARCH=loong64 CGO_ENABLED=0 go build -v -o main-loong64 .
+        
+        echo "📋 验证文件:"
+        file main-loong64
+        
+        echo "📏 文件大小:"
+        ls -lh main-loong64
+        
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: loong64-binary
+        path: main-loong64
+        retention-days: 7
+        
+    - name: Create test script
+      run: |
+        # 创建测试脚本
+        cat > test-loong64.sh << 'EOF'
+        echo "=== 龙芯程序测试脚本 ==="
+        echo "文件信息:"
+        file main-loong64
+        echo ""
+        echo "使用说明:"
+        echo "1. 将 main-loong64 复制到龙芯电脑"
+        echo "2. 添加执行权限: chmod +x main-loong64"
+        echo "3. 运行: ./main-loong64"
+        EOF
+        
+    - name: Upload test script
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-script
+        path: test-loong64.sh
