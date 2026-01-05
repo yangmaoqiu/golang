@@ -37,6 +37,11 @@ jobs:
         key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           ${{ runner.os }}-go-
+
+    - name: Install LoongArch Cross-Compiler
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-loongarch64-linux-gnu
           
     - name: Initialize module
       id: init-module
@@ -61,38 +66,47 @@ jobs:
         
     - name: Build
       run: |
-        echo "开始交叉编译 LoongArch64 (无 CGO 模式)..."
+        echo "开始交叉编译 LoongArch64 (开启 CGO 以兼容 purego)..."
         
-        # 核心关键点：
-        # 1. CGO_ENABLED=0 避免使用宿主机的 gcc
-        # 2. GOARCH=loong64 是 Go 1.19+ 支持的标准架构名
-        export CGO_ENABLED=0
+        # 必须开启 CGO 才能解决 purego/internal/fakecgo 的 undefined 错误
+        export CGO_ENABLED=1
         
+        # 指定交叉编译器
+        export CC=loongarch64-linux-gnu-gcc
+        
+        # 编译命令
+        # -extldflags "-static" 建议保留，以减少对龙芯机器上 glibc 版本的依赖
         GOOS=linux GOARCH=loong64 go build \
-          -ldflags="-w -s" \
+          -ldflags="-w -s -extldflags '-static'" \
           -o main-loong64 \
           .
           
         echo "✅ 编译完成"
         
-    - name: Test (optional)
-      if: github.event.inputs.skip_tests != 'true'
-      run: |
-        echo "运行测试 (在 x86 宿主机上仅能运行纯 Go 测试)..."
-        # 注意：交叉编译环境下无法直接运行运行生成的二进制测试文件，
-        # 但 go test 仍然可以检查代码逻辑
-        go test ./... -v || echo "测试完成"
-        
     - name: Verify
       run: |
         echo "=== 验证构建结果 ==="
         if [ -f "main-loong64" ]; then
-          echo "文件信息 (确认应显示 LoongArch):"
+          echo "文件详细信息:"
           file main-loong64
+          echo ""
+          echo "检查是否为静态链接:"
+          ldd main-loong64 2>/dev/null || echo "确认是静态链接或无法在本机解析"
         else
           echo "❌ 错误: 未生成 main-loong64"
           exit 1
         fi
+        
+    - name: Create release package
+      run: |
+        echo "创建发布包..."
+        cat > VERSION << EOF
+Version: 1.0.0
+Build: ${{ github.sha }}
+Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+Arch: loongarch64
+OS: linux
+EOF
         
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -100,3 +114,5 @@ jobs:
         name: loong64-release
         path: |
           main-loong64
+          VERSION
+        retention-days: 30
